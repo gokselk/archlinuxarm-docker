@@ -1,0 +1,90 @@
+FROM arm64v8/alpine:3.17 AS builder
+
+# Install dependencies and update system
+RUN apk add --no-cache --virtual .build-deps \
+        bash \
+        coreutils \
+        pacman \
+        dirmngr \
+    && apk update \
+    && apk upgrade
+
+# Change shell to bash
+RUN rm /bin/sh && ln -s /bin/bash /bin/sh
+
+# Add symlinks needed for arch keyring install scripts
+RUN ln -s /bin/bash /usr/bin/bash && ln -s /bin/bash /usr/bin/sh
+
+# Create folder for container root
+RUN mkdir /archroot
+
+# Add repositories to pacman.conf
+# SigLevel = TrustAll is required to install keyring first time
+RUN echo -e "SigLevel = TrustAll\n\
+[core]\n\
+Server = https://eu.mirror.archlinuxarm.org/\$arch/\$repo\n\n\
+[extra]\n\
+Server = https://eu.mirror.archlinuxarm.org/\$arch/\$repo\n\n\
+[community]\n\
+Server = https://eu.mirror.archlinuxarm.org/\$arch/\$repo\n\n\
+[alarm]\n\
+Server = https://eu.mirror.archlinuxarm.org/\$arch/\$repo\n\n\
+[aur]\n\
+Server = https://eu.mirror.archlinuxarm.org/\$arch/\$repo" >> /etc/pacman.conf
+
+# Initialize keyring and install keyring packages
+RUN pacman-key --init
+RUN pacman -Sydd --noconfirm archlinux-keyring archlinuxarm-keyring
+
+# Remove SigLevel = TrustAll from pacman.conf, since we have the keyring installed
+RUN sed -i '/SigLevel = TrustAll/d' /etc/pacman.conf
+
+# Change mirror to http://mirror.archlinuxarm.org
+# This URL redirects to the closest mirror, but doesn't work with https
+RUN sed -i 's/https:\/\/eu.mirror.archlinuxarm.org/http:\/\/mirror.archlinuxarm.org/g' /etc/pacman.conf
+RUN pacman -Syy
+
+# Create needed directories
+RUN mkdir -m 0755 -p /archroot/var/{cache/pacman/pkg,lib/pacman,log} /archroot/{dev,run,etc/pacman.d}
+RUN mkdir -m 1777 -p /archroot/tmp
+RUN mkdir -m 0555 -p /archroot/{sys,proc}
+
+# Install base packages
+# (excluding systemd, kernel, pciutils which are not needed)
+RUN pacman -r "/archroot" -Sy --noconfirm \
+    archlinux-keyring \
+    archlinuxarm-keyring \
+    bash \
+    bzip2 \
+    coreutils \
+    file \
+    filesystem \
+    findutils \
+    gawk \
+    gcc-libs \
+    gettext \
+    glibc \
+    grep \
+    gzip \
+    iproute2 \
+    iputils \
+    licenses \
+    pacman \
+    procps-ng \
+    psmisc \
+    sed \
+    shadow \
+    tar \
+    util-linux \
+    xz
+
+# Copy keyring to archroot
+RUN cp -a --no-preserve=ownership /etc/pacman.d/gnupg /archroot/etc/pacman.d/
+
+FROM scratch
+COPY --from=builder /archroot /
+
+# run dirmngr once to create /root/.gnupg
+RUN dirmngr </dev/null &>/dev/null
+
+CMD ["/bin/bash"]
